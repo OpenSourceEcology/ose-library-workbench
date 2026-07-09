@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OSE Library Workbench — author part libraries inside FreeCAD</title>
+<meta name="description" content="A FreeCAD workbench for OSE part-library authors: browse entries, compile them, edit parameters, and run the validators without leaving FreeCAD.">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--paper:#fbfaf7;--ink:#21201c;--graphite:#8a8578;--lumber:#e9d8a6;--rev:#b3391f;--hair:#d8d4c8}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font:16px/1.65 "IBM Plex Sans",-apple-system,sans-serif}
+a{color:var(--ink);text-decoration:underline;text-underline-offset:3px}
+a:hover{color:var(--rev)}
+.wrap{max-width:880px;margin:0 auto;padding:0 24px}
+.hdr{border-bottom:1.5px solid var(--ink)}
+.hdr .wrap{display:flex;gap:1rem;align-items:baseline;padding:14px 24px;font:500 13px/1 "IBM Plex Mono",monospace;letter-spacing:.08em}
+.hdr .org{color:var(--graphite);margin-left:auto}
+h1{font:700 clamp(1.9rem,5vw,2.9rem)/1.12 "IBM Plex Sans",sans-serif;letter-spacing:-.01em;margin:2.6rem 0 1rem}
+.lede{font-size:1.1rem;max-width:60ch;color:#3c3a33}
+h2{font:600 13px/1 "IBM Plex Mono",monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--graphite);margin:2.8rem 0 1rem;padding-top:1rem;border-top:1px solid var(--hair)}
+p.body{max-width:64ch;margin-bottom:1rem}
+.loop{margin:1.6rem 0}
+.loop svg{width:100%;height:auto;display:block}
+pre{background:#fff;border:1px solid var(--hair);padding:1rem 1.2rem;font:13px/1.6 "IBM Plex Mono",monospace;overflow-x:auto;margin:1rem 0}
+.links{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:1rem;margin:1.2rem 0}
+.card{border:1px solid var(--hair);background:#fff;padding:1rem 1.1rem}
+.card b{display:block;font-weight:600;margin-bottom:.25rem}
+.card span{font-size:.92rem;color:#4a473e}
+.card .lbl{font:500 11px "IBM Plex Mono",monospace;color:var(--graphite);letter-spacing:.1em;display:block;margin-bottom:.5rem}
+.tblock{margin-top:3.4rem;border:1.5px solid var(--ink)}
+.tblock table{width:100%;border-collapse:collapse;font:12px/1.5 "IBM Plex Mono",monospace}
+.tblock td{border:1px solid var(--ink);padding:.5rem .8rem;vertical-align:top}
+.tblock .lbl{display:block;font-size:9.5px;letter-spacing:.12em;color:var(--graphite)}
+footer{padding:0 0 3rem}
+</style>
+</head>
+<body>
+<div class="hdr"><div class="wrap"><span>OSE LIBRARY WORKBENCH</span><span class="org">OPEN SOURCE ECOLOGY</span></div></div>
+<main class="wrap">
+
+<h1>The authoring loop, inside FreeCAD.</h1>
+<p class="lede">Library authors design in FreeCAD; the validators live in CI.
+This workbench closes the gap: open a part library, compile any entry into
+your document, edit its parameters, and run both validators — without leaving
+FreeCAD or waiting for a pull request to find out.</p>
+
+<h2>The loop</h2>
+<div class="loop">
+<svg viewBox="0 0 860 120" role="img" aria-label="Diagram of the authoring loop: browse the library, compile an entry, edit parameters, validate, and repeat">
+<g font-family="IBM Plex Mono,monospace" font-size="13" fill="#21201c">
+  <rect x="10" y="34" width="150" height="52" fill="#fff" stroke="#21201c"/>
+  <text x="85" y="56" text-anchor="middle">browse</text>
+  <text x="85" y="74" text-anchor="middle" font-size="10" fill="#8a8578">entries by layer</text>
+  <line x1="160" y1="60" x2="215" y2="60" stroke="#21201c"/>
+  <rect x="215" y="34" width="150" height="52" fill="#e9d8a6" stroke="#21201c"/>
+  <text x="290" y="56" text-anchor="middle">compile</text>
+  <text x="290" y="74" text-anchor="middle" font-size="10" fill="#6b5f3e">into your document</text>
+  <line x1="365" y1="60" x2="420" y2="60" stroke="#21201c"/>
+  <rect x="420" y="34" width="150" height="52" fill="#fff" stroke="#21201c"/>
+  <text x="495" y="56" text-anchor="middle">edit</text>
+  <text x="495" y="74" text-anchor="middle" font-size="10" fill="#8a8578">schema parameters</text>
+  <line x1="570" y1="60" x2="625" y2="60" stroke="#21201c"/>
+  <rect x="625" y="34" width="150" height="52" fill="#fff" stroke="#b3391f"/>
+  <text x="700" y="56" text-anchor="middle" fill="#b3391f">validate</text>
+  <text x="700" y="74" text-anchor="middle" font-size="10" fill="#8a8578">both tiers, live</text>
+  <path d="M 700 34 L 700 14 L 85 14 L 85 34" fill="none" stroke="#8a8578" stroke-dasharray="4 4"/>
+</g>
+</svg>
+</div>
+<p class="body">Validation results match CI exactly — the workbench calls the
+same <code>libtools</code> checks the library's pipeline runs, and writes the
+same report files. What passes on your bench passes in the pull request.</p>
+
+<h2>Install</h2>
+<pre>cd ~/.local/share/FreeCAD/Mod        # macOS: ~/Library/Application Support/FreeCAD/Mod
+git clone https://github.com/OpenSourceEcology/ose-library-workbench.git
+pip install 'libtools @ git+https://github.com/OpenSourceEcology/vcs-library'</pre>
+<p class="body">Restart FreeCAD, pick <b>OSE Library</b> from the workbench
+list, and open a library checkout — for instance
+<a href="https://github.com/OpenSourceEcology/vcs-library">vcs-library</a>.
+Targets FreeCAD 1.x.</p>
+
+<h2>Go to</h2>
+<div class="links">
+  <div class="card"><span class="lbl">SOURCE</span><b><a href="https://github.com/OpenSourceEcology/ose-library-workbench">github.com/OpenSourceEcology/ose-library-workbench</a></b><span>Addon source, plan, and CI that round-trips a real entry.</span></div>
+  <div class="card"><span class="lbl">A LIBRARY TO OPEN</span><b><a href="https://opensourceecology.github.io/vcs-library/">vcs-library</a></b><span>The Village Construction Set entries this was built against.</span></div>
+  <div class="card"><span class="lbl">BROWSE</span><b><a href="https://opensourceecology.github.io/ose-library-site/">The library, rendered</a></b><span>Entry pages with 3D, drawings, BOMs, and validation status.</span></div>
+  <div class="card"><span class="lbl">CONTEXT</span><b><a href="https://iconic-cad.goodancestor.com">Iconic CAD</a></b><span>Where the libraries end up: a house you can read.</span></div>
+</div>
+
+<footer>
+<div class="tblock"><table>
+<tr>
+  <td style="width:34%"><span class="lbl">PROJECT</span>OSE LIBRARY WORKBENCH</td>
+  <td style="width:22%"><span class="lbl">ORG</span>OPEN SOURCE ECOLOGY</td>
+  <td style="width:22%"><span class="lbl">TARGETS</span>FREECAD 1.X</td>
+  <td style="width:22%"><span class="lbl">LICENSE</span>OSE / CC-BY-SA-4.0</td>
+</tr>
+<tr>
+  <td><span class="lbl">SOURCE</span><a href="https://github.com/OpenSourceEcology/ose-library-workbench">github.com/OpenSourceEcology/ose-library-workbench</a></td>
+  <td><span class="lbl">WIKI</span><a href="https://wiki.opensourceecology.org">wiki.opensourceecology.org</a></td>
+  <td><span class="lbl">DEVELOPED BY</span><a href="https://goodancestor.com">GOOD ANCESTOR FOUNDATION</a></td>
+  <td><span class="lbl">STATUS</span>V0</td>
+</tr>
+</table></div>
+</footer>
+</main>
+</body>
+</html>
