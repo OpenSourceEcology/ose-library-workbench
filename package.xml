@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package format="1">
+  <name>ose_library_workbench</name>
+  <version>0.0.1</version>
+  <date>2026-07-09</date>
+  <description>FreeCAD workbench for browsing, compiling, editing, and validating OSE Schema Canon libraries.</description>
+  <maintainer email="info@opensourceecology.org">Open Source Ecology</maintainer>
+  <license>LGPL-2.1-or-later</license>
+  <url type="repository">https://github.com/OpenSourceEcology/ose-library-workbench</url>
+  <depend>FreeCAD</depend>
+  <content>
+    <workbench>OSELibraryWorkbench</workbench>
+  </content>
+</package>

@@ -1,0 +1,10 @@
+id: mini_box
+layer: module
+title: Mini Box
+owner: OSE
+license: CC-BY-SA-4.0
+version: 0.1.0
+status: active
+provenance:
+  author: OSE
+slots: {}

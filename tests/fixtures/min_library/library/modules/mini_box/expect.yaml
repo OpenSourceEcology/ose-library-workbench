@@ -1,0 +1,6 @@
+params:
+  - key: width_in
+    min: 1
+    max: 20
+solids:
+  min_count: 1
