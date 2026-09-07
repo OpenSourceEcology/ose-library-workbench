@@ -245,36 +245,48 @@ def _managed_compile(entry: Entry, doc: Any, override: dict | None, binding: Any
     schema = _deep_merge(load_schema(entry), override or {})
     schema_json = json.dumps(schema, allow_nan=False)
     old_names = list(binding.ManagedNames) if binding is not None else []
-    before_names = {obj.Name for obj in doc.Objects}
-    doc.openTransaction("Compile OSE library entry")
+    # FreeCAD headless documents default to UndoMode=0, where abortTransaction
+    # is a no-op. Enable recording for this operation, then restore that mode.
+    previous_undo_mode = getattr(doc, "UndoMode", None)
+    if previous_undo_mode == 0:
+        doc.UndoMode = 1
     try:
-        created = compile_entry_into(entry, doc, schema)
-        if not created or any(obj.Name in before_names for obj in created):
-            raise ValueError("Entry compiler must create new document objects.")
-        doc.recompute()
-        _check_compiled_objects(created)
-        if binding is None:
-            binding = doc.addObject("App::FeaturePython", "OSELibraryBinding")
-            for kind, name in [("App::PropertyString", "OSEBindingVersion"),
-                               ("App::PropertyString", "LibraryRoot"),
-                               ("App::PropertyString", "EntryPath"),
-                               ("App::PropertyStringList", "ManagedNames"),
-                               ("App::PropertyString", "SchemaJSON")]:
-                binding.addProperty(kind, name, "OSE Library")
-                binding.setEditorMode(name, 1)
-            binding.OSEBindingVersion = "1"
-        for name in old_names:
-            doc.removeObject(name)
-        binding.LibraryRoot, binding.EntryPath = _entry_identity(entry)
-        binding.ManagedNames = [obj.Name for obj in created]
-        binding.SchemaJSON = schema_json
-        doc.recompute()
-        _check_compiled_objects(created)
-        doc.commitTransaction()
-        return created
-    except Exception:
-        doc.abortTransaction()
-        raise
+        doc.openTransaction("Compile OSE library entry")
+        try:
+            # Remove old objects *inside* the transaction before compilation.
+            # Otherwise FreeCAD changes source labels to avoid duplicates, which
+            # breaks role-based validators even after the old objects are gone.
+            for name in old_names:
+                doc.removeObject(name)
+            before_names = {obj.Name for obj in doc.Objects}
+            created = compile_entry_into(entry, doc, schema)
+            if not created or any(obj.Name in before_names for obj in created):
+                raise ValueError("Entry compiler must create new document objects.")
+            doc.recompute()
+            _check_compiled_objects(created)
+            if binding is None:
+                binding = doc.addObject("App::FeaturePython", "OSELibraryBinding")
+                for kind, name in [("App::PropertyString", "OSEBindingVersion"),
+                                   ("App::PropertyString", "LibraryRoot"),
+                                   ("App::PropertyString", "EntryPath"),
+                                   ("App::PropertyStringList", "ManagedNames"),
+                                   ("App::PropertyString", "SchemaJSON")]:
+                    binding.addProperty(kind, name, "OSE Library")
+                    binding.setEditorMode(name, 1)
+                binding.OSEBindingVersion = "1"
+            binding.LibraryRoot, binding.EntryPath = _entry_identity(entry)
+            binding.ManagedNames = [obj.Name for obj in created]
+            binding.SchemaJSON = schema_json
+            doc.recompute()
+            _check_compiled_objects(created)
+            doc.commitTransaction()
+            return created
+        except Exception:
+            doc.abortTransaction()
+            raise
+    finally:
+        if previous_undo_mode == 0:
+            doc.UndoMode = previous_undo_mode
 
 
 def validate_managed_entry(entry: Entry, doc: Any) -> Report:

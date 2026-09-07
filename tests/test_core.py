@@ -27,6 +27,7 @@ def _copy_fixture_library(tmp_path: Path) -> Path:
 class DummyDoc:
     def __init__(self):
         self.Objects = []
+        self.UndoMode = 0
 
     def addObject(self, type_name, label):
         name = label
@@ -48,12 +49,15 @@ class DummyDoc:
         pass
 
     def openTransaction(self, name):
-        self._snapshot = [(obj, deepcopy(obj.__dict__)) for obj in self.Objects]
+        self._snapshot = ([(obj, deepcopy(obj.__dict__)) for obj in self.Objects]
+                          if self.UndoMode else None)
 
     def commitTransaction(self):
         self._snapshot = None
 
     def abortTransaction(self):
+        if self._snapshot is None:
+            return
         self.Objects = [obj for obj, _ in self._snapshot]
         for obj, values in self._snapshot:
             obj.__dict__.clear()
@@ -204,6 +208,9 @@ def test_managed_replacement_preserves_unrelated_objects_and_schema():
     assert original[0] not in doc.Objects
     assert len(doc.Objects) == 3  # user's box, replacement box, saved binding
     assert replacement[0].Width == 9
+    assert replacement[0].Name == original[0].Name
+    assert replacement[0].Label == original[0].Label
+    assert doc.UndoMode == 0
     assert binding.ManagedNames == [replacement[0].Name]
     assert core.managed_schema_override(entry, doc)["width_in"] == 9
     with pytest.raises(ValueError, match="already has"):
@@ -226,6 +233,7 @@ def test_failed_replacement_rolls_back_partial_geometry_and_binding(tmp_path):
         core.replace_managed_entry(entry, doc, {"width_in": 12})
     assert doc.Objects == before_objects
     assert core.managed_schema_override(entry, doc) == before_schema
+    assert doc.UndoMode == 0
 
 
 def test_initial_compile_failure_leaves_unrelated_objects(tmp_path):
@@ -285,3 +293,13 @@ def test_deleted_managed_geometry_is_rejected():
     doc.removeObject(created[0].Name)
     with pytest.raises(ValueError, match="incomplete"):
         core.require_managed_entry(entry, doc)
+
+
+
+def test_managed_compile_preserves_enabled_undo_mode():
+    entry = core.open_library(FIXTURE_ROOT)[0]
+    doc = DummyDoc()
+    doc.UndoMode = 1
+    core.compile_managed_entry(entry, doc)
+    core.replace_managed_entry(entry, doc, {"width_in": 9})
+    assert doc.UndoMode == 1
