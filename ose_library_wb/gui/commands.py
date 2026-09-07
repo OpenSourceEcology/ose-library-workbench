@@ -35,8 +35,10 @@ class OpenLibraryCommand:
         if not directory:
             return
         try:
-            state.library_root = Path(directory)
-            state.entries = core.open_library(state.library_root)
+            root = Path(directory).resolve()
+            entries = core.open_library(root)
+            state.library_root = root
+            state.entries = entries
             state.selected_entry_id = None
             state.schema_override = None
             refresh_entries()
@@ -61,7 +63,7 @@ class CompileEntryCommand:
             return
         try:
             doc = App.newDocument(entry.meta.get("title", entry.id).replace(" ", "_"))
-            core.compile_entry_into(entry, doc, state.schema_override)
+            core.compile_managed_entry(entry, doc, state.schema_override)
             doc.recompute()
             if Gui.ActiveDocument is not None:
                 Gui.SendMsgToActiveView("ViewFit")
@@ -84,14 +86,17 @@ class EditParametersCommand:
         if entry is None:
             _message("Select an entry first.")
             return
-        dialog = ParameterDialog(entry, Gui.getMainWindow())
-        if dialog.exec_():
+        try:
             doc = App.ActiveDocument
-            if doc is not None and state.schema_override:
-                core.compile_entry_into(entry, doc, state.schema_override)
-                doc.recompute()
+            schema = core.managed_schema_override(entry, doc)
+            dialog = ParameterDialog(entry, Gui.getMainWindow(), schema_override=schema)
+            if dialog.exec_() and dialog.applied_schema is not None:
+                core.replace_managed_entry(entry, doc, dialog.applied_schema)
+                state.schema_override = dialog.applied_schema
                 if Gui.ActiveDocument is not None:
                     Gui.SendMsgToActiveView("ViewFit")
+        except Exception as exc:
+            _error("Edit Parameters Failed", exc)
 
     def IsActive(self):
         return state.selected_entry() is not None
@@ -114,7 +119,7 @@ class ValidateEntryCommand:
             _message("Compile the entry into a document first.")
             return
         try:
-            report = core.validate_live(entry, doc)
+            report = core.validate_managed_entry(entry, doc)
             show_report(report)
             refresh_entries()
         except Exception as exc:

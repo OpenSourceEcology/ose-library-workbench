@@ -15,6 +15,15 @@ for discovery, schema loading, validation, and reports. Anything generic
 that this workbench needs and libtools lacks gets contributed upstream to
 libtools, keeping this repo GUI-only.
 
+## Current compatibility behavior
+
+The workbench now accepts independent collection roots, including
+`vcs-library/collections/gvcs`. GUI documents persist their library/entry
+identity and applied schema. Parameter Apply transactionally replaces managed
+objects; validation rejects mismatched documents and ignores unrelated objects.
+The generic headless append/validate helpers remain available to integrations.
+See the README for installation and the current workflow.
+
 ## v0 scope
 
 1. **Addon skeleton** installable via FreeCAD's Addon Manager layout

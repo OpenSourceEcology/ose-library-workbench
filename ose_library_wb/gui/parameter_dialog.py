@@ -7,16 +7,16 @@ from PySide import QtGui
 from libtools.registry import load_schema
 
 from ose_library_wb import core
-from . import state
 
 
 class ParameterDialog(QtGui.QDialog):
-    def __init__(self, entry, parent=None):
+    def __init__(self, entry, parent=None, schema_override=None):
         super().__init__(parent)
         self.entry = entry
         self.schema = load_schema(entry)
-        if state.schema_override:
-            self.schema = _deep_merge(self.schema, state.schema_override)
+        if schema_override:
+            self.schema = _deep_merge(self.schema, schema_override)
+        self.applied_schema = None
         self.widgets = {}
 
         self.setWindowTitle(f"Edit Parameters: {entry.id}")
@@ -50,7 +50,7 @@ class ParameterDialog(QtGui.QDialog):
         return edited
 
     def apply_changes(self):
-        state.schema_override = self.edited_schema()
+        self.applied_schema = self.edited_schema()
         self.accept()
 
     def export_changes(self):
@@ -83,7 +83,10 @@ class ParameterDialog(QtGui.QDialog):
                 self.form.addRow(label, widget)
             elif isinstance(value, str):
                 widget = QtGui.QLineEdit(value)
-                self.widgets[path] = widget
+                if path in {("schema_name",), ("document_name",), ("units",)}:
+                    widget.setReadOnly(True)
+                else:
+                    self.widgets[path] = widget
                 self.form.addRow(label, widget)
             elif isinstance(value, list):
                 widget = QtGui.QLineEdit(repr(value))

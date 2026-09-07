@@ -11,13 +11,16 @@ same combined report JSON to ``<library-root>/reports/<entry-id>.json``.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from copy import deepcopy
+import json
 from importlib import util
 import pprint
 import sys
 import traceback
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
+from threading import RLock
 from typing import Any
 
 from libtools.code_validator import validate_code
@@ -65,11 +68,13 @@ def compile_entry_into(
     if schema_override:
         schema = _deep_merge(schema, schema_override)
 
-    before = {id(obj) for obj in getattr(doc, "Objects", [])}
-    compiler = _load_compiler(entry.compiler_path)
-    result = compiler.compile(schema, doc)
+    before = {getattr(obj, "Name", id(obj)) for obj in getattr(doc, "Objects", [])}
+    with _compiler_import_scope(entry):
+        compiler = _load_compiler(entry.compiler_path)
+        result = compiler.compile(schema, doc)
 
-    created = [obj for obj in getattr(doc, "Objects", []) if id(obj) not in before]
+    created = [obj for obj in getattr(doc, "Objects", [])
+               if getattr(obj, "Name", id(obj)) not in before]
     if created:
         return created
     if isinstance(result, list):
@@ -128,19 +133,7 @@ def _load_compiler(path: Path) -> ModuleType:
         raise ImportError(f"could not load compiler from {path}")
 
     module = util.module_from_spec(spec)
-    parent = str(path.parent)
-    inserted = False
-    if parent not in sys.path:
-        sys.path.insert(0, parent)
-        inserted = True
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        if inserted:
-            try:
-                sys.path.remove(parent)
-            except ValueError:
-                pass
+    spec.loader.exec_module(module)
     return module
 
 
@@ -150,3 +143,149 @@ def _prefix_checks(prefix: str, checks: list[Check]) -> list[Check]:
 
 def _library_root_for(entry: Entry) -> Path:
     return entry.path.parents[2]
+
+
+_IMPORT_LOCK = RLock()
+
+
+@contextmanager
+def _compiler_import_scope(entry: Entry):
+    """Resolve entry/root helpers for synchronous compilation, then restore imports.
+
+    Import names belong to a library only during its compile call. In particular,
+    switching between checkouts with equally named helpers must not reuse another
+    checkout's cached module. Keeping the scope around compile() also supports
+    imports made inside that function. This is not a sandbox for library code.
+    """
+    paths = [entry.path.resolve(), _library_root_for(entry).resolve()]
+    names = {
+        child.stem if child.is_file() else child.name
+        for path in paths
+        for child in path.iterdir()
+        if (child.is_dir() or child.suffix == ".py")
+        and (child.stem if child.is_file() else child.name).isidentifier()
+    }
+    with _IMPORT_LOCK:
+        previous_path = sys.path[:]
+        previous_modules = {
+            name: module for name, module in sys.modules.items()
+            if name.split(".")[0] in names
+        }
+        for name in previous_modules:
+            del sys.modules[name]
+        sys.path[:0] = [str(path) for path in paths]
+        try:
+            yield
+        finally:
+            sys.path[:] = previous_path
+            for name in list(sys.modules):
+                if name.split(".")[0] in names:
+                    del sys.modules[name]
+            sys.modules.update(previous_modules)
+
+
+def _binding(doc: Any) -> Any | None:
+    bindings = [obj for obj in doc.Objects
+                if getattr(obj, "OSEBindingVersion", None) == "1"]
+    if len(bindings) > 1:
+        raise ValueError("Document contains multiple OSE entry bindings; compile a new document.")
+    return bindings[0] if bindings else None
+
+
+def _entry_identity(entry: Entry) -> tuple[str, str]:
+    root = _library_root_for(entry).resolve()
+    return str(root), entry.path.resolve().relative_to(root).as_posix()
+
+
+def require_managed_entry(entry: Entry, doc: Any) -> Any:
+    """Return the saved binding or reject an unbound/mismatched document.
+
+    A binding identifies a checkout and relative entry path, not merely an ID.
+    Moving a checkout requires compiling a new document from its new location.
+    """
+    if doc is None:
+        raise ValueError("Compile the selected entry into a document first.")
+    binding = _binding(doc)
+    if binding is None:
+        raise ValueError("This document is not an OSE entry document. Compile the selected entry first.")
+    if (binding.LibraryRoot, binding.EntryPath) != _entry_identity(entry):
+        raise ValueError("The active document belongs to a different library entry. "
+                         "Activate its matching document or compile the selected entry.")
+    names = list(binding.ManagedNames)
+    if not names or len(set(names)) != len(names) or any(doc.getObject(name) is None for name in names):
+        raise ValueError("The document's managed geometry is incomplete. Compile a new document.")
+    return binding
+
+
+def managed_schema_override(entry: Entry, doc: Any) -> dict:
+    """Read the parameters last successfully compiled into this document."""
+    return json.loads(require_managed_entry(entry, doc).SchemaJSON)
+
+
+def compile_managed_entry(entry: Entry, doc: Any, schema_override: dict | None = None) -> list[Any]:
+    """Compile and bind an unbound document in one FreeCAD transaction.
+
+    Existing unrelated objects are preserved. This helper requires FreeCAD's
+    document transaction API; generic compile_entry_into remains append-only.
+    """
+    if _binding(doc) is not None:
+        raise ValueError("Document already has an OSE entry; use replace_managed_entry.")
+    return _managed_compile(entry, doc, schema_override, None)
+
+
+def replace_managed_entry(entry: Entry, doc: Any, schema_override: dict | None = None) -> list[Any]:
+    """Replace only this entry's recorded objects, rolling back failed compiles."""
+    binding = require_managed_entry(entry, doc)
+    return _managed_compile(entry, doc, schema_override, binding)
+
+
+def _managed_compile(entry: Entry, doc: Any, override: dict | None, binding: Any | None) -> list[Any]:
+    # Serialize before touching the document, so invalid override data cannot
+    # leave half a transaction. Persist the complete applied schema for reopen.
+    schema = _deep_merge(load_schema(entry), override or {})
+    schema_json = json.dumps(schema, allow_nan=False)
+    old_names = list(binding.ManagedNames) if binding is not None else []
+    before_names = {obj.Name for obj in doc.Objects}
+    doc.openTransaction("Compile OSE library entry")
+    try:
+        created = compile_entry_into(entry, doc, schema)
+        if not created or any(obj.Name in before_names for obj in created):
+            raise ValueError("Entry compiler must create new document objects.")
+        doc.recompute()
+        _check_compiled_objects(created)
+        if binding is None:
+            binding = doc.addObject("App::FeaturePython", "OSELibraryBinding")
+            for kind, name in [("App::PropertyString", "OSEBindingVersion"),
+                               ("App::PropertyString", "LibraryRoot"),
+                               ("App::PropertyString", "EntryPath"),
+                               ("App::PropertyStringList", "ManagedNames"),
+                               ("App::PropertyString", "SchemaJSON")]:
+                binding.addProperty(kind, name, "OSE Library")
+                binding.setEditorMode(name, 1)
+            binding.OSEBindingVersion = "1"
+        for name in old_names:
+            doc.removeObject(name)
+        binding.LibraryRoot, binding.EntryPath = _entry_identity(entry)
+        binding.ManagedNames = [obj.Name for obj in created]
+        binding.SchemaJSON = schema_json
+        doc.recompute()
+        _check_compiled_objects(created)
+        doc.commitTransaction()
+        return created
+    except Exception:
+        doc.abortTransaction()
+        raise
+
+
+def validate_managed_entry(entry: Entry, doc: Any) -> Report:
+    """Validate the bound entry's geometry, excluding unrelated document objects."""
+    binding = require_managed_entry(entry, doc)
+    managed = SimpleNamespace(Objects=[doc.getObject(name) for name in binding.ManagedNames])
+    return validate_live(entry, managed)
+
+
+
+def _check_compiled_objects(objects: list[Any]) -> None:
+    for obj in objects:
+        if any(state in {"Invalid", "Error"} for state in getattr(obj, "State", [])):
+            raise ValueError(f"Compilation produced an invalid object: {obj.Name}")

@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
+import sys
+from types import ModuleType
+
+import pytest
 import shutil
 from pathlib import Path
 
@@ -24,15 +29,48 @@ class DummyDoc:
         self.Objects = []
 
     def addObject(self, type_name, label):
+        name = label
+        while self.getObject(name) is not None:
+            name += "_new"
         obj = DummyObject(type_name, label)
+        obj.Name = name
         self.Objects.append(obj)
         return obj
+
+
+    def getObject(self, name):
+        return next((obj for obj in self.Objects if obj.Name == name), None)
+
+    def removeObject(self, name):
+        self.Objects.remove(self.getObject(name))
+
+    def recompute(self):
+        pass
+
+    def openTransaction(self, name):
+        self._snapshot = [(obj, deepcopy(obj.__dict__)) for obj in self.Objects]
+
+    def commitTransaction(self):
+        self._snapshot = None
+
+    def abortTransaction(self):
+        self.Objects = [obj for obj, _ in self._snapshot]
+        for obj, values in self._snapshot:
+            obj.__dict__.clear()
+            obj.__dict__.update(values)
+        self._snapshot = None
 
 
 class DummyObject:
     def __init__(self, type_name, label):
         self.Type = type_name
         self.Label = label
+
+    def addProperty(self, *args):
+        pass
+
+    def setEditorMode(self, *args):
+        pass
 
 
 def test_open_library_minimal_fixture():
@@ -107,3 +145,143 @@ def test_validate_live_writes_combined_report(tmp_path):
     assert written["id"] == "mini_box"
     assert written["tier"] == "code+output"
     assert written["passed"] is False
+
+
+@pytest.mark.parametrize("runtime", [False, True])
+def test_collection_helpers_are_scoped_across_library_switches(tmp_path, monkeypatch, runtime):
+    # Simulate another plugin already using an identically named module.
+    original = ModuleType("shared_geometry")
+    original.VALUE = "plugin"
+    monkeypatch.setitem(sys.modules, "shared_geometry", original)
+    previous_path = sys.path[:]
+    entries = []
+    for index in range(2):
+        root = tmp_path / str(index) / "collections" / "gvcs"
+        shutil.copytree(FIXTURE_ROOT, root)
+        (root / "shared_geometry.py").write_text(f"VALUE = {index}\n")
+        entry = core.open_library(root)[0]
+        entry.compiler_path.write_text(
+            ("" if runtime else "from shared_geometry import VALUE\n")
+            + "def compile(schema, doc):\n"
+            + ("    from shared_geometry import VALUE\n" if runtime else "")
+            + "    obj = doc.addObject('Part::Feature', 'Result')\n"
+            + "    obj.Value = VALUE\n"
+            + "    return [obj]\n"
+        )
+        entries.append(entry)
+    for index in [0, 1, 0]:
+        result = core.compile_entry_into(entries[index], DummyDoc())
+        assert result[0].Value == index
+        assert sys.modules["shared_geometry"] is original
+        assert sys.path == previous_path
+
+
+def test_failed_compile_restores_import_state(tmp_path):
+    root = _copy_fixture_library(tmp_path)
+    entry = core.open_library(root)[0]
+    (root / "entry_test_helper.py").write_text("VALUE = 1\n")
+    entry.compiler_path.write_text(
+        "def compile(schema, doc):\n"
+        "    import entry_test_helper\n"
+        "    raise RuntimeError('compile failed')\n"
+    )
+    previous_path = sys.path[:]
+    with pytest.raises(RuntimeError, match="compile failed"):
+        core.compile_entry_into(entry, DummyDoc())
+    assert sys.path == previous_path
+    assert "entry_test_helper" not in sys.modules
+
+
+def test_managed_replacement_preserves_unrelated_objects_and_schema():
+    entry = core.open_library(FIXTURE_ROOT)[0]
+    doc = DummyDoc()
+    unrelated = doc.addObject("Part::Box", "UserGeometry")
+    original = core.compile_managed_entry(entry, doc)
+    replacement = core.replace_managed_entry(entry, doc, {"width_in": 9})
+    binding = core.require_managed_entry(entry, doc)
+
+    assert unrelated in doc.Objects
+    assert original[0] not in doc.Objects
+    assert len(doc.Objects) == 3  # user's box, replacement box, saved binding
+    assert replacement[0].Width == 9
+    assert binding.ManagedNames == [replacement[0].Name]
+    assert core.managed_schema_override(entry, doc)["width_in"] == 9
+    with pytest.raises(ValueError, match="already has"):
+        core.compile_managed_entry(entry, doc)
+
+
+def test_failed_replacement_rolls_back_partial_geometry_and_binding(tmp_path):
+    root = _copy_fixture_library(tmp_path)
+    entry = core.open_library(root)[0]
+    doc = DummyDoc()
+    core.compile_managed_entry(entry, doc, {"width_in": 7})
+    before_objects = doc.Objects[:]
+    before_schema = core.managed_schema_override(entry, doc)
+    entry.compiler_path.write_text(
+        "def compile(schema, doc):\n"
+        "    doc.addObject('Part::Box', 'Partial')\n"
+        "    raise RuntimeError('after partial geometry')\n"
+    )
+    with pytest.raises(RuntimeError, match="partial geometry"):
+        core.replace_managed_entry(entry, doc, {"width_in": 12})
+    assert doc.Objects == before_objects
+    assert core.managed_schema_override(entry, doc) == before_schema
+
+
+def test_initial_compile_failure_leaves_unrelated_objects(tmp_path):
+    root = _copy_fixture_library(tmp_path)
+    entry = core.open_library(root)[0]
+    doc = DummyDoc()
+    unrelated = doc.addObject("Part::Box", "UserGeometry")
+    entry.compiler_path.write_text(
+        "def compile(schema, doc):\n"
+        "    obj = doc.addObject('Part::Feature', 'Broken')\n"
+        "    obj.State = ['Invalid']\n"
+        "    return [obj]\n"
+    )
+    with pytest.raises(ValueError, match="invalid object"):
+        core.compile_managed_entry(entry, doc)
+    assert doc.Objects == [unrelated]
+
+
+def test_document_identity_survives_reopen_and_rejects_other_checkout(tmp_path):
+    entry = core.open_library(FIXTURE_ROOT)[0]
+    other = core.open_library(_copy_fixture_library(tmp_path))[0]
+    doc = DummyDoc()
+    core.compile_managed_entry(entry, doc)
+    reopened = deepcopy(doc)  # no Python-side document registry needed
+    core.require_managed_entry(entry, reopened)
+    with pytest.raises(ValueError, match="different library entry"):
+        core.replace_managed_entry(other, reopened)
+    with pytest.raises(ValueError, match="different library entry"):
+        core.validate_managed_entry(other, reopened)
+    with pytest.raises(ValueError, match="not an OSE entry"):
+        core.require_managed_entry(entry, DummyDoc())
+    with pytest.raises(ValueError, match="Compile the selected"):
+        core.require_managed_entry(entry, None)
+
+
+def test_managed_validation_excludes_unrelated_geometry(monkeypatch):
+    entry = core.open_library(FIXTURE_ROOT)[0]
+    doc = DummyDoc()
+    doc.addObject("Part::Box", "UserGeometry")
+    created = core.compile_managed_entry(entry, doc)
+    received = []
+
+    def validate(selected, objects):
+        assert selected is entry
+        received.extend(objects.Objects)
+        return "report"
+
+    monkeypatch.setattr(core, "validate_live", validate)
+    assert core.validate_managed_entry(entry, doc) == "report"
+    assert received == created
+
+
+def test_deleted_managed_geometry_is_rejected():
+    entry = core.open_library(FIXTURE_ROOT)[0]
+    doc = DummyDoc()
+    created = core.compile_managed_entry(entry, doc)
+    doc.removeObject(created[0].Name)
+    with pytest.raises(ValueError, match="incomplete"):
+        core.require_managed_entry(entry, doc)
