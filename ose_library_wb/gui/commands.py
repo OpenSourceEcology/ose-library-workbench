@@ -65,8 +65,7 @@ class CompileEntryCommand:
             doc = App.newDocument(entry.meta.get("title", entry.id).replace(" ", "_"))
             core.compile_managed_entry(entry, doc, state.schema_override)
             doc.recompute()
-            if Gui.ActiveDocument is not None:
-                Gui.SendMsgToActiveView("ViewFit")
+            _fit_document(doc)
         except Exception as exc:
             _error("Compile Entry Failed", exc)
 
@@ -93,8 +92,7 @@ class EditParametersCommand:
             if dialog.exec_() and dialog.applied_schema is not None:
                 core.replace_managed_entry(entry, doc, dialog.applied_schema)
                 state.schema_override = dialog.applied_schema
-                if Gui.ActiveDocument is not None:
-                    Gui.SendMsgToActiveView("ViewFit")
+                _fit_document(doc)
         except Exception as exc:
             _error("Edit Parameters Failed", exc)
 
@@ -127,6 +125,12 @@ class ValidateEntryCommand:
 
     def IsActive(self):
         return state.selected_entry() is not None
+
+
+def _fit_document(doc):
+    gui_doc = Gui.getDocument(doc.Name)
+    if gui_doc is not None:
+        gui_doc.activeView().fitAll()
 
 
 def _message(text):

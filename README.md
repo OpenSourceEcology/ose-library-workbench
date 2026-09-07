@@ -1,8 +1,9 @@
 # OSE Library Workbench
 
 FreeCAD 1.x workbench for browsing, compiling, editing, and validating OSE
-Schema Canon libraries. It supports the housing library and the GVCS collection
-in [vcs-library](https://github.com/OpenSourceEcology/vcs-library).
+Schema Canon libraries, including housing and machine entries currently stored
+in [vcs-library](https://github.com/OpenSourceEcology/vcs-library). The workbench
+uses the library root you select; it does not require a VCS/GVCS hierarchy.
 
 ## Install
 
@@ -31,7 +32,9 @@ Clone `vcs-library` separately for editable source files, then select the
 ## Use
 
 1. **Open Library** and choose a library root: the `vcs-library` checkout for
-   housing, or its `collections/gvcs` directory for the eight GVCS entries.
+   housing, or the current `collections/gvcs` directory for the eight machine
+   entries. This directory is a storage location, not a separate construction
+   set; choose the new root if the files are reorganized later.
 2. Select an entry, then **Compile Entry** to create a document.
 3. With that entry and its document active, **Edit Parameters** and choose
    **Apply**. A successful compile replaces the previous managed geometry.
@@ -74,5 +77,8 @@ collection's identically named helper. Compilers remain ordinary trusted Python
 code, and should create their output in the provided document.
 
 Run headless unit tests with `python -m pytest -q` after installing `libtools`
-and `pytest`. CI also exercises the real FreeCAD round trip. See
+and `pytest`. CI also compiles housing and machine entries in real FreeCAD,
+checks replacement, rollback and saved bindings, and exercises GUI commands and
+the parameter dialog with Xvfb. Its machine fixture path can be overridden with
+`OSE_MACHINE_LIBRARY_SUBDIR` when source storage changes. See
 [docs/plan.md](docs/plan.md) for the original scope and remaining authoring work.

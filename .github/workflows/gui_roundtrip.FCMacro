@@ -1,0 +1,113 @@
+"""Offscreen command/dialog integration; run with the full FreeCAD executable."""
+import json
+import math
+import os
+from pathlib import Path
+import shutil
+import sys
+import tempfile
+import traceback
+
+sys.path.insert(0, os.environ['OSE_WB_ROOT'])
+sys.path.insert(0, os.environ['OSE_WB_LIBTOOLS_PATH'])
+try:
+    import FreeCAD as App
+    import FreeCADGui as Gui
+    from PySide import QtCore, QtGui
+    from ose_library_wb import core
+    from ose_library_wb.gui import commands, state
+    from ose_library_wb.gui.parameter_dialog import ParameterDialog
+except Exception:
+    Path(os.environ['OSE_GUI_REPORT_OUT']).write_text(json.dumps(
+        {'passed': False, 'stage': 'imports', 'error': traceback.format_exc()}))
+    os._exit(1)
+
+
+def run_checks():
+    output = Path(os.environ['OSE_GUI_REPORT_OUT'])
+    output.parent.mkdir(parents=True, exist_ok=True)
+    errors = []
+    commands._error = lambda title, error: errors.append((title, str(error)))
+    commands._message = lambda text: errors.append(('message', text))
+    result = {'passed': False}
+    def progress(stage):
+        output.write_text(json.dumps({'passed': False, 'stage': stage}) + '\n')
+    progress('started')
+    try:
+        with tempfile.TemporaryDirectory(prefix='ose-wb-gui-') as tmp:
+            root = Path(tmp) / 'gvcs'
+            shutil.copytree(Path(os.environ['OSE_LIBRARY_ROOT']) / os.environ.get('OSE_MACHINE_LIBRARY_SUBDIR', 'collections/gvcs'), root,
+                            ignore=shutil.ignore_patterns('reports', '__pycache__'))
+            state.library_root = root
+            state.entries = core.open_library(root)
+            spacer = next(entry for entry in state.entries if entry.id == 'axis_idler_spacer')
+            state.selected_entry_id = spacer.id
+            state.schema_override = None
+            commands.register()
+            progress('compile command')
+            commands.CompileEntryCommand().Activated()
+            assert not errors, errors
+            doc = App.ActiveDocument
+            binding = core.require_managed_entry(spacer, doc)
+            volume = doc.getObject(binding.ManagedNames[0]).Shape.Volume
+            dialog = ParameterDialog(spacer, Gui.getMainWindow())
+            assert ('thickness_in',) in dialog.widgets
+            assert ('units',) not in dialog.widgets and ('source_parts',) not in dialog.widgets
+            dialog.deleteLater()
+
+            def edit_dialog(value, export=False):
+                def factory(*args, **kwargs):
+                    dialog = ParameterDialog(*args, **kwargs)
+                    dialog.widgets[('thickness_in',)].setValue(value)
+                    button = dialog.export_button if export else dialog.apply_button
+                    QtCore.QTimer.singleShot(0, button.click)
+                    return dialog
+                commands.ParameterDialog = factory
+                progress('export dialog' if export else f'edit dialog {value}')
+                commands.EditParametersCommand().Activated()
+
+            edit_dialog(0.08)
+            assert not errors, errors
+            binding = core.require_managed_entry(spacer, doc)
+            assert len(binding.ManagedNames) == 1
+            shape = doc.getObject(binding.ManagedNames[0]).Shape
+            assert math.isclose(shape.Volume, volume * 2, rel_tol=1e-9)
+            applied = binding.SchemaJSON
+            edit_dialog(-1)
+            assert len(errors) == 1 and 'positive finite' in errors.pop()[1]
+            binding = core.require_managed_entry(spacer, doc)
+            assert binding.SchemaJSON == applied
+            assert math.isclose(doc.getObject(binding.ManagedNames[0]).Shape.Volume, volume * 2, rel_tol=1e-9)
+            edit_dialog(0.12, export=True)
+            assert not errors, errors
+            assert spacer.schema_path.with_name('schema.py.new').is_file()
+            assert core.require_managed_entry(spacer, doc).SchemaJSON == applied
+
+            other = next(entry for entry in state.entries if entry.id != spacer.id)
+            state.selected_entry_id = other.id
+            commands.ValidateEntryCommand().Activated()
+            progress('wrong document validation returned')
+            assert len(errors) == 1 and 'different library entry' in errors.pop()[1]
+            commands.EditParametersCommand().Activated()
+            assert len(errors) == 1 and 'different library entry' in errors.pop()[1]
+            state.selected_entry_id = spacer.id
+            progress('correct validation command')
+            commands.ValidateEntryCommand().Activated()
+            assert not errors, errors
+            report = core.latest_report(root, spacer.id)
+            assert [check['name'] for check in report['checks'] if not check['passed']] == ['output:fit']
+            App.closeDocument(doc.Name)
+            result = {'passed': True, 'freecad_version': App.Version(),
+                      'parameter_dialog': True, 'compile_command': True,
+                      'apply_changes': True, 'failed_edit_preserved_geometry': True,
+                      'export_does_not_recompile': True, 'wrong_document_rejected': True,
+                      'validation_command': True}
+    except Exception:
+        result['error'] = traceback.format_exc()
+    finally:
+        output.write_text(json.dumps(result, indent=2) + '\n')
+        # This isolated test process must not block on startup/save dialogs.
+        os._exit(0 if result['passed'] else 1)
+
+
+run_checks()
